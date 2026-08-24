@@ -199,18 +199,16 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
         return
 
     current_zone     = 5
-    dwell_start      = time.time()   # when we entered the current zone
+    dwell_elapsed    = 0.0   # accumulated time in current zone (PAUSES on no-detection)
+    last_frame_time  = time.time()
     blink_start      = None
 
     # Tunable thresholds
-    DWELL_SEC           = args.dwell_sec   # seconds to confirm a selection
-    MIN_BLINK_FRAMES    = 3                # ignore micro-noise (< 3 frames)
-    MAX_BLINK_FRAMES    = 60              # ~2s — longer means looked away, not blink
-    BLINK_CONFIRM_FRAC  = 0.55            # must have ≥55% dwell to allow blink-select
-    # Zone stability: require this many consecutive frames predicting the same
-    # zone before we accept the switch. Eliminates frame-to-frame jitter.
+    DWELL_SEC           = args.dwell_sec
+    MIN_BLINK_FRAMES    = 3
+    MAX_BLINK_FRAMES    = 60              # ~2s at 30fps
+    BLINK_CONFIRM_FRAC  = 0.55
     ZONE_LOCK_FRAMES    = 8
-    # Minimum model confidence to accept a zone at all (0.0–1.0)
     MIN_CONF            = 0.30
 
     # Longer smoothing window = smoother but slightly more latency
@@ -218,12 +216,12 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
     probs_history = collections.deque(maxlen=history_len)
     blink_frames  = 0
 
-    # Stability buffer: track candidate zone and consecutive frame count
     candidate_zone        = current_zone
     candidate_zone_frames = 0
 
     def gaze_loop():
-        nonlocal current_zone, dwell_start, blink_frames, blink_start
+        nonlocal current_zone, dwell_elapsed, last_frame_time
+        nonlocal blink_frames, blink_start
         nonlocal candidate_zone, candidate_zone_frames
 
         _preview_counter = 0
@@ -233,7 +231,10 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 time.sleep(0.01)
                 continue
 
-            now = time.time()
+            now       = time.time()
+            dt        = now - last_frame_time   # real seconds since last frame
+            last_frame_time = now
+
             left, right, annotated = eye_det.detect(frame)
             eyes_ok = (left is not None and right is not None)
 
@@ -260,10 +261,11 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
 
                 if blink_frames > MAX_BLINK_FRAMES:
                     # User just looked away / occluded — reset dwell
-                    dwell_start = now + DWELL_SEC
+                    dwell_elapsed         = 0.0
                     probs_history.clear()
                     candidate_zone        = current_zone
                     candidate_zone_frames = 0
+                    gui.set_dwell_progress(current_zone, 0.0)
                     gui._set_status(
                         "NO FACE/EYES DETECTED — move closer, face the light, "
                         f"no glasses glare.  (frames={blink_frames})"
@@ -279,11 +281,10 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
 
             # Deliberate blink: fire if dwell is sufficiently progressed
             if MIN_BLINK_FRAMES <= elapsed_blink <= MAX_BLINK_FRAMES:
-                elapsed_dwell = now - dwell_start
-                dwell_frac    = min(elapsed_dwell / DWELL_SEC, 1.0)
+                dwell_frac = min(dwell_elapsed / DWELL_SEC, 1.0)
                 if dwell_frac >= BLINK_CONFIRM_FRAC:
                     gui.fire_command(current_zone)
-                    dwell_start = now + DWELL_SEC
+                    dwell_elapsed = 0.0
                     gui.set_dwell_progress(current_zone, 0.0)
                     continue
 
@@ -309,20 +310,24 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 candidate_zone        = raw_zone
                 candidate_zone_frames = 1
 
+            zone_switched = False
             # Accept zone switch when stable and confident enough
             if (candidate_zone != current_zone
                     and candidate_zone_frames >= ZONE_LOCK_FRAMES
                     and conf >= MIN_CONF):
                 gui.set_dwell_progress(current_zone, 0.0)
                 current_zone          = candidate_zone
-                dwell_start           = now
-                candidate_zone_frames = 0  # reset after accepting
+                dwell_elapsed         = 0.0   # reset accumulated time on zone change
+                candidate_zone_frames = 0
+                zone_switched         = True
 
             gui.set_gaze_direction(current_zone)
 
-            # 5. Update dwell bar
-            elapsed  = now - dwell_start
-            fraction = min(elapsed / DWELL_SEC, 1.0)
+            # 5. Update dwell bar (advance by real elapsed time)
+            if not zone_switched:
+                dwell_elapsed = min(dwell_elapsed + dt, DWELL_SEC)
+            
+            fraction = dwell_elapsed / DWELL_SEC
             gui.set_dwell_progress(current_zone, fraction)
 
             # 6. Show live debug info in status bar
