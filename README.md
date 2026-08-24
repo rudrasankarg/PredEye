@@ -13,7 +13,7 @@
 py -3.12 -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# Install PyTorch with CUDA 12.4 (RTX 4050 Laptop GPU)
+# Install PyTorch with CUDA 12.4
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies
@@ -122,7 +122,7 @@ python main.py --mode webcam_sync --user_id yourname
 ```powershell
 python evaluate.py --sentence "painting which landform" --save_json results.json
 ```
-> ⚠️ Replace `--accuracy` and `--spm` with values measured from your real live session.
+>  Replace `--accuracy` and `--spm` with values measured from your real live session.
 
 ---
 
