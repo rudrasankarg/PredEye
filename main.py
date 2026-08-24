@@ -199,21 +199,29 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
         return
 
     current_zone     = 5
-    dwell_elapsed    = 0.0   # accumulated time in current zone (PAUSES on no-detection)
+    dwell_elapsed    = 0.0
     last_frame_time  = time.time()
     blink_start      = None
 
     # Tunable thresholds
-    DWELL_SEC           = args.dwell_sec
-    MIN_BLINK_FRAMES    = 3
-    MAX_BLINK_FRAMES    = 60              # ~2s at 30fps
-    BLINK_CONFIRM_FRAC  = 0.55
-    ZONE_LOCK_FRAMES    = 8
-    MIN_CONF            = 0.30
+    DWELL_SEC             = args.dwell_sec
+    # Natural blink is ~100-400ms (~3-12 frames at 30fps).
+    # We require the eye to be CLOSED for at least MIN_BLINK_FRAMES
+    # before we count it as intentional — this filters involuntary blinks.
+    MIN_BLINK_FRAMES      = 8    # ~0.27s minimum — ignores normal involuntary blinks
+    MAX_BLINK_FRAMES      = 60   # ~2s  — longer = lost face, not a blink
+    BLINK_CONFIRM_FRAC    = 0.55
+    ZONE_LOCK_FRAMES      = 8
+    MIN_CONF              = 0.30
 
-    scan_mode           = getattr(args, 'scan_mode', False)
-    SCAN_INTERVAL_SEC   = 1.5
-    last_scan_time      = time.time()
+    scan_mode             = getattr(args, 'scan_mode', False)
+    SCAN_INTERVAL_SEC     = 1.5
+    # In scan mode use a wider blink window to distinguish intentional from natural
+    SCAN_BLINK_MIN        = 8    # ~0.27s
+    SCAN_BLINK_MAX        = 45   # ~1.5s  (any longer = looked away)
+    SCAN_POST_FIRE_SEC    = 2.0  # freeze scanning after a selection
+    last_scan_time        = time.time()
+    scan_cooldown_until   = 0.0  # absolute time before scanning resumes
 
     # Longer smoothing window = smoother but slightly more latency
     history_len   = 25
@@ -227,7 +235,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
         nonlocal current_zone, dwell_elapsed, last_frame_time
         nonlocal blink_frames, blink_start
         nonlocal candidate_zone, candidate_zone_frames
-        nonlocal last_scan_time
+        nonlocal last_scan_time, scan_cooldown_until
 
         _preview_counter = 0
         while True:
@@ -279,18 +287,25 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 time.sleep(0.01)
                 continue
 
-            # ── Eyes visible again ──────────────────────────────────────────────
+            # ── Eyes visible again ────────────────────────────────────────────────
             elapsed_blink = blink_frames
             blink_frames  = 0
             blink_start   = None
 
-            # Deliberate blink: fire if dwell is sufficiently progressed
-            if MIN_BLINK_FRAMES <= elapsed_blink <= MAX_BLINK_FRAMES:
-                if scan_mode:
-                    gui.fire_command(current_zone)
-                    last_scan_time = now
-                    continue
-                else:
+            # ── Deliberate blink detection ────────────────────────────────────────
+            if scan_mode:
+                # Scan mode: blink window is SCAN_BLINK_MIN..SCAN_BLINK_MAX
+                # Natural blinks (< MIN_BLINK_FRAMES) are silently ignored.
+                if SCAN_BLINK_MIN <= elapsed_blink <= SCAN_BLINK_MAX:
+                    if now >= scan_cooldown_until:  # not in post-fire freeze
+                        gui.fire_command(current_zone)
+                        # Freeze scanning for SCAN_POST_FIRE_SEC after selection
+                        scan_cooldown_until = now + SCAN_POST_FIRE_SEC
+                        last_scan_time      = now + SCAN_POST_FIRE_SEC
+                # Don't continue — fall through to update display below
+            else:
+                # Normal gaze mode: blink can confirm current dwell
+                if MIN_BLINK_FRAMES <= elapsed_blink <= MAX_BLINK_FRAMES:
                     dwell_frac = min(dwell_elapsed / DWELL_SEC, 1.0)
                     if dwell_frac >= BLINK_CONFIRM_FRAC:
                         gui.fire_command(current_zone)
@@ -298,22 +313,32 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                         gui.set_dwell_progress(current_zone, 0.0)
                         continue
 
-            # ── Normal gaze processing ──────────────────────────────────────────
+            # ── Normal gaze / scan display ────────────────────────────────────────
             if scan_mode:
-                elapsed_scan = now - last_scan_time
-                if elapsed_scan >= SCAN_INTERVAL_SEC:
-                    current_zone = (current_zone % 9) + 1
-                    last_scan_time = now
-                
+                if now >= scan_cooldown_until:
+                    elapsed_scan = now - last_scan_time
+                    if elapsed_scan >= SCAN_INTERVAL_SEC:
+                        current_zone   = (current_zone % 9) + 1
+                        last_scan_time = now
+                        elapsed_scan   = 0.0
+                    fraction = min(elapsed_scan / SCAN_INTERVAL_SEC, 1.0)
+                else:
+                    # Post-selection freeze: clear all bars and show countdown
+                    fraction = 0.0
+                    for z in range(1, 10):
+                        gui.set_dwell_progress(z, 0.0)
+
                 gui.set_gaze_direction(current_zone)
-                
-                fraction = min(elapsed_scan / SCAN_INTERVAL_SEC, 1.0)
                 gui.set_dwell_progress(current_zone, fraction)
-                
-                gui._set_status(
-                    f"SCAN MODE (zone {current_zone}) — Blink to select "
-                    f"| Scan progress={fraction:.0%}"
-                )
+
+                if now < scan_cooldown_until:
+                    remaining = scan_cooldown_until - now
+                    gui._set_status(f"SCAN MODE — Selected! Next scan in {remaining:.1f}s...")
+                else:
+                    gui._set_status(
+                        f"SCAN MODE (zone {current_zone}) — Blink 0.27-1.5s to select "
+                        f"| Next zone in {(1.0 - fraction) * SCAN_INTERVAL_SEC:.1f}s"
+                    )
             else:
                 Lp, Rp, left_probs, right_probs = gaze_pred.predict(left, right)
     

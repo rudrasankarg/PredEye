@@ -98,7 +98,7 @@ class KeyboardGUI:
         self._gaze_dir    = 5
         self._pred_labels = ["", "", ""]
         self._last_fire_time = 0.0   # cooldown: prevents double-fires
-        self._fire_cooldown  = 0.6   # seconds between allowed fires
+        self._fire_cooldown  = 1.5   # seconds between allowed fires (hard backstop)
         self._is_done        = False # locks input when done typing
 
         # TTS
