@@ -294,7 +294,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                     dwell_frac = min(dwell_elapsed / DWELL_SEC, 1.0)
                     if dwell_frac >= BLINK_CONFIRM_FRAC:
                         gui.fire_command(current_zone)
-                        dwell_elapsed = 0.0
+                        dwell_elapsed = -DWELL_SEC  # Cooldown before next fire
                         gui.set_dwell_progress(current_zone, 0.0)
                         continue
 
@@ -353,20 +353,21 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 if not zone_switched:
                     dwell_elapsed = min(dwell_elapsed + dt, DWELL_SEC)
                 
-                fraction = dwell_elapsed / DWELL_SEC
+                # fraction is 0 during the cooldown period
+                fraction = max(0.0, min(dwell_elapsed / DWELL_SEC, 1.0))
                 gui.set_dwell_progress(current_zone, fraction)
     
                 # 6. Show live debug info in status bar
                 gui._set_status(
                     f"Gaze: {GAZE_DIR_NAMES.get(current_zone,'?')} (zone {current_zone})  "
-                    f"conf={conf:.0%}  candidate={GAZE_DIR_NAMES.get(candidate_zone,'?')}×{candidate_zone_frames}  "
+                    f"conf={conf:.0%}  candidate={GAZE_DIR_NAMES.get(candidate_zone,'?')}x{candidate_zone_frames}  "
                     f"dwell={fraction:.0%}"
                 )
     
                 # 7. Auto-fire on full dwell
                 if fraction >= 1.0:
                     gui.fire_command(current_zone)
-                    dwell_elapsed         = 0.0
+                    dwell_elapsed         = -DWELL_SEC  # Apply cooldown to prevent double-firing
                     candidate_zone_frames = 0
 
         cap.release()
