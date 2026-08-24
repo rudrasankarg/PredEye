@@ -13,7 +13,7 @@
 py -3.12 -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# Install PyTorch with CUDA 12.4 (RTX 4050 Laptop GPU)
+# Install PyTorch with CUDA 12.4
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies
