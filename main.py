@@ -151,6 +151,9 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
     gui = KeyboardGUI(prediction_enabled=True, tts_enabled=args.tts)
     gui.on_text_change = make_text_change_handler(gui, predictor)
     gui.update_predictions(predictor.get_completions("", top_k=3))
+    # Pass session metadata so survey can record them
+    gui._survey_user_id = args.user_id
+    gui._survey_mode    = algorithm + ("_scan" if getattr(args, 'scan_mode', False) else "")
 
     import collections
 
@@ -216,12 +219,14 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
 
     scan_mode             = getattr(args, 'scan_mode', False)
     SCAN_INTERVAL_SEC     = 1.5
+    SCAN_ZONES            = list(range(1, 14))  # 1-9 keyboard + 10=pred1 11=pred2 12=pred3 13=done
     # In scan mode use a wider blink window to distinguish intentional from natural
     SCAN_BLINK_MIN        = 8    # ~0.27s
     SCAN_BLINK_MAX        = 45   # ~1.5s  (any longer = looked away)
     SCAN_POST_FIRE_SEC    = 2.0  # freeze scanning after a selection
     last_scan_time        = time.time()
     scan_cooldown_until   = 0.0  # absolute time before scanning resumes
+    scan_zone_idx         = 0    # index into SCAN_ZONES
 
     # Longer smoothing window = smoother but slightly more latency
     history_len   = 25
@@ -235,7 +240,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
         nonlocal current_zone, dwell_elapsed, last_frame_time
         nonlocal blink_frames, blink_start
         nonlocal candidate_zone, candidate_zone_frames
-        nonlocal last_scan_time, scan_cooldown_until
+        nonlocal last_scan_time, scan_cooldown_until, scan_zone_idx
 
         _preview_counter = 0
         while True:
@@ -318,26 +323,36 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 if now >= scan_cooldown_until:
                     elapsed_scan = now - last_scan_time
                     if elapsed_scan >= SCAN_INTERVAL_SEC:
-                        current_zone   = (current_zone % 9) + 1
+                        # Advance to next zone in the full 1-13 cycle
+                        scan_zone_idx  = (scan_zone_idx + 1) % len(SCAN_ZONES)
+                        current_zone   = SCAN_ZONES[scan_zone_idx]
                         last_scan_time = now
                         elapsed_scan   = 0.0
+                        # Clear dwell on all zones so only current zone shows progress
+                        for z in SCAN_ZONES:
+                            gui.set_dwell_progress(z, 0.0)
                     fraction = min(elapsed_scan / SCAN_INTERVAL_SEC, 1.0)
                 else:
                     # Post-selection freeze: clear all bars and show countdown
                     fraction = 0.0
-                    for z in range(1, 10):
+                    for z in SCAN_ZONES:
                         gui.set_dwell_progress(z, 0.0)
 
                 gui.set_gaze_direction(current_zone)
                 gui.set_dwell_progress(current_zone, fraction)
+
+                zone_name = {
+                    10: "Prediction 1", 11: "Prediction 2",
+                    12: "Prediction 3", 13: "Done Typing"
+                }.get(current_zone, f"zone {current_zone}")
 
                 if now < scan_cooldown_until:
                     remaining = scan_cooldown_until - now
                     gui._set_status(f"SCAN MODE — Selected! Next scan in {remaining:.1f}s...")
                 else:
                     gui._set_status(
-                        f"SCAN MODE (zone {current_zone}) — Blink 0.27-1.5s to select "
-                        f"| Next zone in {(1.0 - fraction) * SCAN_INTERVAL_SEC:.1f}s"
+                        f"SCAN MODE → [{zone_name}] — Blink 0.27-1.5s to select "
+                        f"| Next in {(1.0 - fraction) * SCAN_INTERVAL_SEC:.1f}s"
                     )
             else:
                 Lp, Rp, left_probs, right_probs = gaze_pred.predict(left, right)
@@ -422,7 +437,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Gaze-Controlled Virtual Keyboard + LSTM Prediction"
     )
-    parser.add_argument("--mode", required=True,
+    parser.add_argument("--mode", default=None,
                         choices=["mouse", "webcam_async", "webcam_sync", "calibrate"])
     parser.add_argument("--user_id",    default="default")
     parser.add_argument("--camera",     type=int, default=0)
@@ -437,7 +452,21 @@ def main():
     parser.add_argument("--scan_mode",  action="store_true",
                         help="Enable auto-scan mode for switch scanning")
     parser.add_argument("--tts",        action="store_true")
+    parser.add_argument("--admin_view_survey", action="store_true",
+                        help="View collected survey data (requires admin password)")
     args = parser.parse_args()
+
+    # Admin survey viewer — runs without starting the GUI
+    if args.admin_view_survey:
+        import getpass
+        from src.survey import load_all, print_summary, verify_admin
+        pwd = getpass.getpass("Enter admin password: ")
+        try:
+            records = load_all(pwd)
+            print_summary(records)
+        except PermissionError as e:
+            print(f"\n  Access denied: {e}\n")
+        return
 
     if args.mode == "mouse":
         run_mouse_mode(args)

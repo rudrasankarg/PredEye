@@ -100,6 +100,16 @@ class KeyboardGUI:
         self._last_fire_time = 0.0   # cooldown: prevents double-fires
         self._fire_cooldown  = 1.5   # seconds between allowed fires (hard backstop)
         self._is_done        = False # locks input when done typing
+        self._session_start  = time.time()
+
+        # Survey state
+        self._is_in_survey   = False
+        self._survey_q_idx   = 0
+        self._survey_answers: dict = {}
+        self._survey_user_id = "default"
+        self._survey_mode    = "unknown"
+        self._survey_callback = None
+        self._survey_frame   = None
 
         # TTS
         self._tts = None
@@ -198,6 +208,18 @@ class KeyboardGUI:
             padx=10
         )
         self._done_btn.pack(side="right", padx=(0, 10))
+
+        # Dwell bars for prediction buttons (zones 10-12)
+        self._pred_dwell_canvases: list = []
+        self._pred_dwell_bars:     list = []
+        for btn in self._pred_buttons:
+            # We'll draw dwell bars lazily using canvas overlaid on pred_outer
+            # For now just stash references; bars drawn in set_dwell_progress
+            self._pred_dwell_canvases.append(None)
+            self._pred_dwell_bars.append(None)
+
+        # Done button dwell state (zone 13)
+        self._done_dwell_frac = 0.0
 
         # ── 3×3 grid ───────────────────────────────────────────────────────────
         grid_frame = tk.Frame(self.root, bg=PALETTE["bg"])
@@ -321,11 +343,15 @@ class KeyboardGUI:
     # ── Gaze / dwell interface ─────────────────────────────────────────────────
 
     def set_gaze_direction(self, direction: int) -> None:
-        """Highlight the focused cell. Thread-safe."""
+        """Highlight the focused cell. Handles zones 1-13. Thread-safe."""
         if direction == self._gaze_dir:
             return
         self._gaze_dir = direction
-        self.root.after(0, self._update_cell_highlight)
+        if direction in range(10, 14):
+            # Top-bar zones: highlight pred buttons or done button
+            self.root.after(0, lambda d=direction: self._update_topbar_highlight(d))
+        else:
+            self.root.after(0, self._update_cell_highlight)
 
     def _update_cell_highlight(self) -> None:
         for d, frame in self._cell_frames.items():
@@ -334,14 +360,33 @@ class KeyboardGUI:
             frame.config(bg=color)
             self._cell_labels[d].config(bg=color)
             self._cell_sublabels[d].config(bg=color)
+        # Unhighlight top-bar when grid zone is focused
+        for btn in self._pred_buttons:
+            btn.config(bg=PALETTE["pred_bg"])
+        self._done_btn.config(bg="#27ae60")
+
+    def _update_topbar_highlight(self, direction: int) -> None:
+        # Unhighlight all grid cells
+        for d, frame in self._cell_frames.items():
+            frame.config(bg=PALETTE["cell_idle"])
+            self._cell_labels[d].config(bg=PALETTE["cell_idle"])
+            self._cell_sublabels[d].config(bg=PALETTE["cell_idle"])
+        # Highlight correct top-bar element
+        for i, btn in enumerate(self._pred_buttons):
+            btn.config(bg=PALETTE["pred_hover"] if direction == 10 + i else PALETTE["pred_bg"])
+        self._done_btn.config(bg="#2ecc71" if direction == 13 else "#27ae60")
 
     def set_dwell_progress(self, direction: int, fraction: float) -> None:
         """
-        Update the dwell progress bar for a cell.
-        fraction: 0.0 = empty, 1.0 = full (fires command).
+        Update dwell progress bar for a cell (zones 1-9) or top-bar button (zones 10-13).
+        fraction: 0.0 = empty, 1.0 = full.
         Thread-safe.
         """
-        self.root.after(0, lambda: self._draw_dwell(direction, fraction))
+        if direction in range(10, 14):
+            # Top-bar button dwell — visualised as button background brightness change
+            self.root.after(0, lambda d=direction, f=fraction: self._draw_topbar_dwell(d, f))
+        else:
+            self.root.after(0, lambda: self._draw_dwell(direction, fraction))
 
     def _draw_dwell(self, direction: int, fraction: float) -> None:
         canvas = self._dwell_canvases.get(direction)
@@ -365,17 +410,24 @@ class KeyboardGUI:
     # ── Command execution ──────────────────────────────────────────────────────
 
     def fire_command(self, direction: int) -> None:
-        """Execute the command at position `direction`. Thread-safe.
-        Ignores rapid duplicate calls within the cooldown window.
-        """
+        """Execute the command. Handles zones 1-13 + survey mode. Thread-safe."""
         import time as _time
-        if getattr(self, "_is_done", False):
+        if getattr(self, "_is_done", False) and not self._is_in_survey:
             return
         now = _time.time()
         if now - self._last_fire_time < self._fire_cooldown:
             return   # too soon — debounce
         self._last_fire_time = now
-        self.root.after(0, lambda: self._execute_command(direction))
+
+        if self._is_in_survey:
+            self.root.after(0, lambda: self._survey_fire(direction))
+        elif direction in (10, 11, 12):     # prediction slots
+            slot = direction - 10
+            self.root.after(0, lambda s=slot: self._on_prediction_click(s))
+        elif direction == 13:               # Done Typing
+            self.root.after(0, self._finish_typing)
+        else:                               # normal grid zone 1-9
+            self.root.after(0, lambda: self._execute_command(direction))
 
     def _execute_command(self, direction: int) -> None:
         # Flash cell
@@ -490,24 +542,196 @@ class KeyboardGUI:
                 pass
 
     def _finish_typing(self) -> None:
-        if self._is_done: return
+        if self._is_done:
+            return
         self._is_done = True
-        self._speak("Typing finished")
-        
-        # Hide all main UI elements
+        self._speak("Typing finished. Please answer a short survey.")
+        # Launch the survey — final screen shown after it completes
+        self.show_survey(
+            user_id   = self._survey_user_id,
+            typed_text= self._typed_text,
+            mode      = self._survey_mode,
+            on_complete = self._show_final_screen,
+        )
+
+    def _show_final_screen(self) -> None:
+        """Show the typed text after the survey is done."""
         for widget in self.root.winfo_children():
             widget.pack_forget()
-            
         final_frame = tk.Frame(self.root, bg=PALETTE["bg"])
         final_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        tk.Label(final_frame, text="✅ FINAL TEXT", fg="#27ae60", bg=PALETTE["bg"], font=self._font_big).pack(pady=(50, 20))
-        
-        # Large prominent text display
-        text_lbl = tk.Label(final_frame, text=self._typed_text, fg="#ffffff", bg=PALETTE["bg"], font=self._font_big, wraplength=900, justify="center")
-        text_lbl.pack(pady=40, expand=True)
-        
-        tk.Button(final_frame, text="EXIT APP", font=self._font_hdr, bg="#e94560", fg="#fff", command=self.root.quit, padx=20, pady=10).pack(pady=40)
+        tk.Label(final_frame, text="\u2705 FINAL TEXT",
+                 fg="#27ae60", bg=PALETTE["bg"],
+                 font=self._font_big).pack(pady=(50, 20))
+        tk.Label(final_frame, text=self._typed_text,
+                 fg="#ffffff", bg=PALETTE["bg"],
+                 font=self._font_big,
+                 wraplength=900, justify="center").pack(pady=40, expand=True)
+        tk.Button(final_frame, text="EXIT APP",
+                  font=self._font_hdr, bg="#e94560", fg="#fff",
+                  command=self.root.quit, padx=20, pady=10).pack(pady=40)
+
+    # ── Survey overlay ─────────────────────────────────────────────────────────
+
+    # Survey questions definition
+    _SURVEY_QUESTIONS = [
+        {
+            "key":      "eye_strain",
+            "question": "How much eye strain did you feel?",
+            "zones":    {
+                1: ("None",     1),
+                3: ("Mild",     2),
+                7: ("High",     3),
+                9: ("Severe",   4),
+            },
+        },
+        {
+            "key":      "typed_intended",
+            "question": "Could you type what you intended?",
+            "zones":    {
+                1: ("Yes",       "Yes"),
+                5: ("Partially", "Partially"),
+                9: ("No",        "No"),
+            },
+        },
+        {
+            "key":      "overall_experience",
+            "question": "How would you rate the overall experience?",
+            "zones":    {
+                1: ("Great \U0001f604",  "Great"),
+                5: ("OK \U0001f610",     "OK"),
+                9: ("Poor \U0001f615",   "Poor"),
+            },
+        },
+    ]
+
+    def show_survey(
+        self,
+        user_id: str,
+        typed_text: str,
+        mode: str,
+        on_complete,
+    ) -> None:
+        """Show the gaze-navigable post-typing survey overlay."""
+        self._survey_user_id  = user_id
+        self._survey_typed    = typed_text
+        self._survey_mode     = mode
+        self._survey_callback = on_complete
+        self._survey_q_idx    = 0
+        self._survey_answers  = {}
+        self._is_in_survey    = True
+        self._session_end_time = time.time()
+        self.root.after(0, self._build_survey_overlay)
+
+    def _build_survey_overlay(self) -> None:
+        """Build or rebuild the survey overlay for the current question."""
+        if self._survey_frame is not None:
+            self._survey_frame.destroy()
+
+        q_data = self._SURVEY_QUESTIONS[self._survey_q_idx]
+        n_q    = len(self._SURVEY_QUESTIONS)
+        q_num  = self._survey_q_idx + 1
+
+        overlay = tk.Frame(self.root, bg="#0d0d1a")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._survey_frame   = overlay
+        self._survey_zone_map = {}  # zone -> value
+
+        # Header
+        tk.Label(overlay,
+                 text=f"Quick Survey  ({q_num}/{n_q})",
+                 fg=PALETTE["text_dim"], bg="#0d0d1a",
+                 font=self._font_hdr).pack(pady=(20, 4))
+
+        tk.Label(overlay,
+                 text=q_data["question"],
+                 fg="#ffffff", bg="#0d0d1a",
+                 font=self._font_big,
+                 wraplength=900).pack(pady=(0, 30))
+
+        # Grid of answer buttons
+        btn_frame = tk.Frame(overlay, bg="#0d0d1a")
+        btn_frame.pack(fill="both", expand=True, padx=30, pady=0)
+        for col in range(3):
+            btn_frame.columnconfigure(col, weight=1)
+        btn_frame.rowconfigure(0, weight=1)
+
+        active_zones = sorted(q_data["zones"].keys())
+        for idx, zone in enumerate(active_zones):
+            label_txt, value = q_data["zones"][zone]
+            self._survey_zone_map[zone] = value
+            col = idx % 3
+
+            cell = tk.Frame(btn_frame, bg=PALETTE["cell_idle"], bd=2, relief="flat")
+            cell.grid(row=0, column=col, padx=10, pady=10, sticky="nsew")
+
+            # Zone number hint
+            tk.Label(cell, text=f"zone {zone}",
+                     fg=PALETTE["text_dim"], bg=PALETTE["cell_idle"],
+                     font=self._font_small).place(x=5, y=3)
+
+            # Answer label
+            tk.Label(cell, text=label_txt,
+                     fg=PALETTE["text_primary"], bg=PALETTE["cell_idle"],
+                     font=self._font_big).place(relx=0.5, rely=0.45, anchor="center")
+
+            # Dwell progress bar at bottom of each survey cell
+            dwell_cv = tk.Canvas(cell, height=10, bg=PALETTE["dwell_track"],
+                                  highlightthickness=0)
+            dwell_cv.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+            bar = dwell_cv.create_rectangle(0, 0, 0, 10,
+                                             fill=PALETTE["dwell_bar"],
+                                             outline="")
+            # Store so set_dwell_progress can update them
+            self._cell_frames[zone]    = cell
+            self._dwell_canvases[zone] = dwell_cv
+            self._dwell_bars[zone]     = bar
+
+        # Instruction footer
+        tk.Label(overlay,
+                 text="Dwell on a zone (or blink in scan mode) to answer",
+                 fg=PALETTE["text_dim"], bg="#0d0d1a",
+                 font=self._font_small).pack(side="bottom", pady=10)
+
+    def _survey_fire(self, zone: int) -> None:
+        """Handle a zone selection during the survey."""
+        q_data = self._SURVEY_QUESTIONS[self._survey_q_idx]
+        if zone not in self._survey_zone_map:
+            return  # zone not active for this question — ignore
+
+        value = self._survey_zone_map[zone]
+        self._survey_answers[q_data["key"]] = value
+        self._survey_q_idx += 1
+
+        if self._survey_q_idx < len(self._SURVEY_QUESTIONS):
+            # Next question
+            self.root.after(200, self._build_survey_overlay)
+        else:
+            # All questions answered — save and finish
+            self._is_in_survey = False
+            if self._survey_frame:
+                self._survey_frame.destroy()
+                self._survey_frame = None
+            self._save_survey()
+            if self._survey_callback:
+                self._survey_callback()
+
+    def _save_survey(self) -> None:
+        try:
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).parent))
+            from survey import save_response
+            session_sec = time.time() - self._session_start
+            save_response(
+                user_id    = self._survey_user_id,
+                typed_text = getattr(self, "_survey_typed", self._typed_text),
+                session_sec= session_sec,
+                mode       = self._survey_mode,
+                responses  = self._survey_answers,
+            )
+        except Exception as e:
+            print(f"[Survey] Failed to save: {e}")
 
     # ── Public helpers ────────────────────────────────────────────────────────
 
