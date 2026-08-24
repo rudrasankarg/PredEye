@@ -211,6 +211,10 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
     ZONE_LOCK_FRAMES    = 8
     MIN_CONF            = 0.30
 
+    scan_mode           = getattr(args, 'scan_mode', False)
+    SCAN_INTERVAL_SEC   = 1.5
+    last_scan_time      = time.time()
+
     # Longer smoothing window = smoother but slightly more latency
     history_len   = 25
     probs_history = collections.deque(maxlen=history_len)
@@ -223,6 +227,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
         nonlocal current_zone, dwell_elapsed, last_frame_time
         nonlocal blink_frames, blink_start
         nonlocal candidate_zone, candidate_zone_frames
+        nonlocal last_scan_time
 
         _preview_counter = 0
         while True:
@@ -281,67 +286,88 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
 
             # Deliberate blink: fire if dwell is sufficiently progressed
             if MIN_BLINK_FRAMES <= elapsed_blink <= MAX_BLINK_FRAMES:
-                dwell_frac = min(dwell_elapsed / DWELL_SEC, 1.0)
-                if dwell_frac >= BLINK_CONFIRM_FRAC:
+                if scan_mode:
                     gui.fire_command(current_zone)
-                    dwell_elapsed = 0.0
-                    gui.set_dwell_progress(current_zone, 0.0)
+                    last_scan_time = now
                     continue
+                else:
+                    dwell_frac = min(dwell_elapsed / DWELL_SEC, 1.0)
+                    if dwell_frac >= BLINK_CONFIRM_FRAC:
+                        gui.fire_command(current_zone)
+                        dwell_elapsed = 0.0
+                        gui.set_dwell_progress(current_zone, 0.0)
+                        continue
 
             # ── Normal gaze processing ──────────────────────────────────────────
-            Lp, Rp, left_probs, right_probs = gaze_pred.predict(left, right)
-
-            # 1. Soft voting between left and right eye
-            avg_probs = (left_probs + right_probs) / 2.0
-
-            # 2. Moving average smoothing across time
-            probs_history.append(avg_probs)
-            smoothed_probs = sum(probs_history) / len(probs_history)
-
-            # 3. Raw predicted zone and its confidence
-            raw_zone = int(smoothed_probs.argmax()) + 1
-            conf     = float(smoothed_probs[raw_zone - 1])
-
-            # 4. Zone-stability filter: only switch zones after ZONE_LOCK_FRAMES
-            #    consecutive frames agree on the new zone AND confidence is high enough
-            if raw_zone == candidate_zone:
-                candidate_zone_frames += 1
+            if scan_mode:
+                elapsed_scan = now - last_scan_time
+                if elapsed_scan >= SCAN_INTERVAL_SEC:
+                    current_zone = (current_zone % 9) + 1
+                    last_scan_time = now
+                
+                gui.set_gaze_direction(current_zone)
+                
+                fraction = min(elapsed_scan / SCAN_INTERVAL_SEC, 1.0)
+                gui.set_dwell_progress(current_zone, fraction)
+                
+                gui._set_status(
+                    f"SCAN MODE (zone {current_zone}) — Blink to select "
+                    f"| Scan progress={fraction:.0%}"
+                )
             else:
-                candidate_zone        = raw_zone
-                candidate_zone_frames = 1
-
-            zone_switched = False
-            # Accept zone switch when stable and confident enough
-            if (candidate_zone != current_zone
-                    and candidate_zone_frames >= ZONE_LOCK_FRAMES
-                    and conf >= MIN_CONF):
-                gui.set_dwell_progress(current_zone, 0.0)
-                current_zone          = candidate_zone
-                dwell_elapsed         = 0.0   # reset accumulated time on zone change
-                candidate_zone_frames = 0
-                zone_switched         = True
-
-            gui.set_gaze_direction(current_zone)
-
-            # 5. Update dwell bar (advance by real elapsed time)
-            if not zone_switched:
-                dwell_elapsed = min(dwell_elapsed + dt, DWELL_SEC)
-            
-            fraction = dwell_elapsed / DWELL_SEC
-            gui.set_dwell_progress(current_zone, fraction)
-
-            # 6. Show live debug info in status bar
-            gui._set_status(
-                f"Gaze: {GAZE_DIR_NAMES.get(current_zone,'?')} (zone {current_zone})  "
-                f"conf={conf:.0%}  candidate={GAZE_DIR_NAMES.get(candidate_zone,'?')}×{candidate_zone_frames}  "
-                f"dwell={fraction:.0%}"
-            )
-
-            # 7. Auto-fire on full dwell
-            if fraction >= 1.0:
-                gui.fire_command(current_zone)
-                dwell_start           = now + DWELL_SEC
-                candidate_zone_frames = 0
+                Lp, Rp, left_probs, right_probs = gaze_pred.predict(left, right)
+    
+                # 1. Soft voting between left and right eye
+                avg_probs = (left_probs + right_probs) / 2.0
+    
+                # 2. Moving average smoothing across time
+                probs_history.append(avg_probs)
+                smoothed_probs = sum(probs_history) / len(probs_history)
+    
+                # 3. Raw predicted zone and its confidence
+                raw_zone = int(smoothed_probs.argmax()) + 1
+                conf     = float(smoothed_probs[raw_zone - 1])
+    
+                # 4. Zone-stability filter: only switch zones after ZONE_LOCK_FRAMES
+                #    consecutive frames agree on the new zone AND confidence is high enough
+                if raw_zone == candidate_zone:
+                    candidate_zone_frames += 1
+                else:
+                    candidate_zone        = raw_zone
+                    candidate_zone_frames = 1
+    
+                zone_switched = False
+                # Accept zone switch when stable and confident enough
+                if (candidate_zone != current_zone
+                        and candidate_zone_frames >= ZONE_LOCK_FRAMES
+                        and conf >= MIN_CONF):
+                    gui.set_dwell_progress(current_zone, 0.0)
+                    current_zone          = candidate_zone
+                    dwell_elapsed         = 0.0   # reset accumulated time on zone change
+                    candidate_zone_frames = 0
+                    zone_switched         = True
+    
+                gui.set_gaze_direction(current_zone)
+    
+                # 5. Update dwell bar (advance by real elapsed time)
+                if not zone_switched:
+                    dwell_elapsed = min(dwell_elapsed + dt, DWELL_SEC)
+                
+                fraction = dwell_elapsed / DWELL_SEC
+                gui.set_dwell_progress(current_zone, fraction)
+    
+                # 6. Show live debug info in status bar
+                gui._set_status(
+                    f"Gaze: {GAZE_DIR_NAMES.get(current_zone,'?')} (zone {current_zone})  "
+                    f"conf={conf:.0%}  candidate={GAZE_DIR_NAMES.get(candidate_zone,'?')}×{candidate_zone_frames}  "
+                    f"dwell={fraction:.0%}"
+                )
+    
+                # 7. Auto-fire on full dwell
+                if fraction >= 1.0:
+                    gui.fire_command(current_zone)
+                    dwell_elapsed         = 0.0
+                    candidate_zone_frames = 0
 
         cap.release()
 
@@ -382,6 +408,8 @@ def main():
     parser.add_argument("--alpha",      type=float, default=6.0)
     parser.add_argument("--dwell_sec",  type=float, default=2.5,
                         help="Seconds to hold in a zone before firing (default=2.5)")
+    parser.add_argument("--scan_mode",  action="store_true",
+                        help="Enable auto-scan mode for switch scanning")
     parser.add_argument("--tts",        action="store_true")
     args = parser.parse_args()
 
