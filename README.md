@@ -122,7 +122,7 @@ python main.py --mode webcam_sync --user_id yourname
 ```powershell
 python evaluate.py --sentence "painting which landform" --save_json results.json
 ```
-> ⚠️ Replace `--accuracy` and `--spm` with values measured from your real live session.
+>  Replace `--accuracy` and `--spm` with values measured from your real live session.
 
 ---
 
