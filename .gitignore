@@ -1,0 +1,40 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environment ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# training images (large, regeneratable from UnityEyes)
+data/
+# evaluation outputs
+results/
+# models/ is intentionally tracked — weights are <20MB and needed to run the app
+
+# ── Large assets ──────────────────────────────────────────────────────────────
+*.zip
+UnityEyes_Windows/
+
+# ── IDE & OS ──────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ── Secrets / local config ────────────────────────────────────────────────────
+.env
+settings.json
+instructions
