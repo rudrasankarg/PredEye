@@ -13,7 +13,7 @@
 py -3.12 -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# Install PyTorch
+# Install PyTorch with Cuda 12.4
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Install remaining dependencies
