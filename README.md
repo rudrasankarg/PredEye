@@ -1,4 +1,4 @@
-# Gaze-Controlled Virtual Keyboard + LSTM Predictive Text
+# Gaze-Controlled Virtual Keyboard + Predictive Text
 
 > **Novel contribution:** LSTM language model (Word2Vec embeddings) predicts top-3 word completions in real time, reducing required gaze-selections by ~40–60% on common English text vs. the Meena & Salvi 2025 baseline.
 
