@@ -115,7 +115,7 @@ class EyeDetector:
 
 def _run_preview(camera_id: int = 0) -> None:
     detector = EyeDetector()
-    cap = cv2.VideoCapture(camera_id)
+    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW) if __import__('sys').platform == 'win32' else cv2.VideoCapture(camera_id)
     print("Eye detector preview — press Q to quit")
 
     while True:

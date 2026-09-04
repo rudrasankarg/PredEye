@@ -47,7 +47,7 @@ TARGET_POSITIONS = {
 
 def run_calibration(user_id: str, camera_id: int, model_path: str) -> None:
     detector = EyeDetector(image_size=IMAGE_SIZE)
-    cap = cv2.VideoCapture(camera_id)
+    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW) if sys.platform == 'win32' else cv2.VideoCapture(camera_id)
     if not cap.isOpened():
         print(f"Cannot open camera {camera_id}")
         return
