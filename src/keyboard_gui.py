@@ -16,6 +16,7 @@ Dwell time: each cell shows a filling progress bar at the bottom.
 The command fires only after the gaze stays in the zone for the full dwell period.
 """
 
+import json
 import sys
 import threading
 import time
@@ -23,6 +24,24 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
 from typing import Callable, Optional
+
+# Path to the editable phrase library
+_PHRASES_JSON = Path(__file__).parent.parent / "phrases.json"
+
+
+def _load_phrases() -> dict:
+    """Load phrases from phrases.json; return empty dict on failure."""
+    try:
+        with open(_PHRASES_JSON, encoding="utf-8") as f:
+            return json.load(f).get("categories", {})
+    except Exception:
+        return {
+            "Greetings": ["Hello", "Thank you", "Please", "Goodbye",
+                          "Good morning", "Good night", "Yes", "No", "How are you?"],
+            "Needs":     ["I need help", "I am hungry", "I am thirsty",
+                          "I am tired", "I am in pain", "Call a doctor",
+                          "I need the bathroom", "I am cold", "I am hot"],
+        }
 
 try:
     from PIL import Image, ImageTk
@@ -111,6 +130,13 @@ class KeyboardGUI:
         self._survey_callback = None
         self._survey_frame   = None
 
+        # Phrase bank state
+        self._phrase_panel       = None   # overlay Frame when open
+        self._phrase_categories  = _load_phrases()
+        self._phrase_zone_map: dict[int, str] = {}   # zone -> phrase/category
+        self._phrase_mode        = "category"         # "category" or "phrases"
+        self._phrase_active_cat  = ""                 # currently shown category
+
         # TTS
         self._tts = None
         if tts_enabled:
@@ -194,6 +220,21 @@ class KeyboardGUI:
             cursor="hand2",
         )
         self._toggle_pred_btn.pack(side="right", padx=10)
+
+        # ── Phrase Bank button (zone 14) ───────────────────────────────────────
+        self._phrase_btn = tk.Button(
+            pred_outer,
+            text="📋 PHRASES",
+            fg="#f0e68c",
+            bg=PALETTE["pred_bg"],
+            activebackground="#7a5c00",
+            relief="flat",
+            font=hdr,
+            command=self._open_phrase_bank,
+            cursor="hand2",
+            padx=8,
+        )
+        self._phrase_btn.pack(side="right", padx=(0, 6))
 
         self._done_btn = tk.Button(
             pred_outer,
@@ -426,10 +467,17 @@ class KeyboardGUI:
             self.root.after(0, lambda s=slot: self._on_prediction_click(s))
         elif direction == 13:               # Done Typing
             self.root.after(0, self._finish_typing)
+        elif direction == 14:              # Phrase Bank toggle
+            self.root.after(0, self._open_phrase_bank)
         else:                               # normal grid zone 1-9
             self.root.after(0, lambda: self._execute_command(direction))
 
     def _execute_command(self, direction: int) -> None:
+        # If phrase bank is open, route zones 1-9 into it
+        if self._phrase_panel is not None:
+            self._phrase_bank_fire(direction)
+            return
+
         # Flash cell
         frame = self._cell_frames.get(direction)
         if frame:
@@ -530,6 +578,190 @@ class KeyboardGUI:
             text="PRED: ON" if self.prediction_enabled else "PRED: OFF"
         )
         self._refresh_predictions()
+
+    # ── Phrase Bank ───────────────────────────────────────────────────────────
+
+    def _open_phrase_bank(self) -> None:
+        """Open or close the phrase bank overlay panel."""
+        if self._phrase_panel is not None:
+            self._close_phrase_bank()
+            return
+        self._phrase_mode = "category"
+        self._build_category_panel()
+
+    def _close_phrase_bank(self) -> None:
+        if self._phrase_panel is not None:
+            self._phrase_panel.destroy()
+            self._phrase_panel = None
+        self._phrase_zone_map = {}
+        self._phrase_btn.config(text="📋 PHRASES", fg="#f0e68c")
+
+    def _build_category_panel(self) -> None:
+        """Show a 3×3 grid of phrase categories to choose from."""
+        if self._phrase_panel is not None:
+            self._phrase_panel.destroy()
+
+        self._phrase_btn.config(text="✖ CLOSE", fg="#e94560")
+        overlay = tk.Frame(self.root, bg="#0a1628", bd=2, relief="solid")
+        overlay.place(relx=0, rely=0.08, relwidth=1, relheight=0.87)
+        self._phrase_panel = overlay
+        self._phrase_zone_map = {}
+
+        tk.Label(overlay, text="📋  PHRASE BANK — Select a category",
+                 fg="#f0e68c", bg="#0a1628",
+                 font=self._font_hdr).pack(pady=(10, 6))
+
+        grid = tk.Frame(overlay, bg="#0a1628")
+        grid.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        cats = list(self._phrase_categories.keys())
+
+        # Fill up to 9 slots (3×3)
+        COLS = 3
+        for col in range(COLS):
+            grid.columnconfigure(col, weight=1)
+        rows_needed = max(3, -(-len(cats) // COLS))  # ceiling division
+        for r in range(rows_needed):
+            grid.rowconfigure(r, weight=1)
+
+        zone_order = [d for d in range(1, 10)]
+        for i, zone in enumerate(zone_order):
+            row, col = divmod(i, COLS)
+            if i < len(cats):
+                cat_name = cats[i]
+                self._phrase_zone_map[zone] = ("category", cat_name)
+                cell_bg = PALETTE["cell_idle"]
+                cell_txt = cat_name
+                sub_txt  = f"{len(self._phrase_categories[cat_name])} phrases"
+            else:
+                cell_bg = "#0d0d0d"
+                cell_txt = ""
+                sub_txt  = ""
+
+            cell = tk.Frame(grid, bg=cell_bg, bd=1, relief="flat")
+            cell.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            tk.Label(cell, text=str(zone), fg=PALETTE["text_dim"],
+                     bg=cell_bg, font=self._font_small).place(x=4, y=2)
+            tk.Label(cell, text=cell_txt,
+                     fg="#f0e68c", bg=cell_bg,
+                     font=self._font_mono).place(relx=0.5, rely=0.42, anchor="center")
+            tk.Label(cell, text=sub_txt,
+                     fg=PALETTE["text_dim"], bg=cell_bg,
+                     font=self._font_small).place(relx=0.5, rely=0.72, anchor="center")
+
+            if i < len(cats):
+                # Click support (mouse mode)
+                cat_name_cap = cats[i]
+                cell.bind("<Button-1>", lambda e, c=cat_name_cap: self._open_category(c))
+                for w in cell.winfo_children():
+                    w.bind("<Button-1>", lambda e, c=cat_name_cap: self._open_category(c))
+
+    def _open_category(self, category: str) -> None:
+        """Show the 9 phrases inside a category."""
+        if self._phrase_panel is not None:
+            self._phrase_panel.destroy()
+
+        self._phrase_mode = "phrases"
+        self._phrase_active_cat = category
+        phrases = self._phrase_categories.get(category, [])
+
+        overlay = tk.Frame(self.root, bg="#0a1628", bd=2, relief="solid")
+        overlay.place(relx=0, rely=0.08, relwidth=1, relheight=0.87)
+        self._phrase_panel = overlay
+        self._phrase_zone_map = {}
+
+        tk.Label(overlay, text=f"📋  {category}  — Gaze to select a phrase",
+                 fg="#f0e68c", bg="#0a1628",
+                 font=self._font_hdr).pack(pady=(10, 6))
+
+        grid = tk.Frame(overlay, bg="#0a1628")
+        grid.pack(fill="both", expand=True, padx=10, pady=0)
+        COLS = 3
+        for col in range(COLS):
+            grid.columnconfigure(col, weight=1)
+        for r in range(3):
+            grid.rowconfigure(r, weight=1)
+
+        zone_order = [d for d in range(1, 10)]
+        for i, zone in enumerate(zone_order):
+            row, col = divmod(i, COLS)
+
+            if zone == 5:
+                # Centre = GO BACK to categories
+                cell_bg  = PALETTE["cell_hover"]
+                cell_txt = "⬅  BACK"
+                sub_txt  = "categories"
+                self._phrase_zone_map[zone] = ("back", "")
+            elif i < len(phrases) + (1 if i >= 4 else 0):
+                # Adjust index to skip zone 5 slot
+                pidx = i if i < 4 else i - 1
+                if pidx < len(phrases):
+                    phrase = phrases[pidx]
+                    self._phrase_zone_map[zone] = ("phrase", phrase)
+                    cell_bg  = PALETTE["cell_idle"]
+                    cell_txt = phrase
+                    sub_txt  = "👁 gaze to select"
+                else:
+                    cell_bg  = "#0d0d0d"
+                    cell_txt = ""
+                    sub_txt  = ""
+            else:
+                cell_bg  = "#0d0d0d"
+                cell_txt = ""
+                sub_txt  = ""
+
+            cell = tk.Frame(grid, bg=cell_bg, bd=1, relief="flat")
+            cell.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+            tk.Label(cell, text=str(zone), fg=PALETTE["text_dim"],
+                     bg=cell_bg, font=self._font_small).place(x=4, y=2)
+            lbl = tk.Label(cell, text=cell_txt,
+                           fg="#ffffff", bg=cell_bg,
+                           font=self._font_hdr,
+                           wraplength=200, justify="center")
+            lbl.place(relx=0.5, rely=0.42, anchor="center")
+            tk.Label(cell, text=sub_txt,
+                     fg=PALETTE["text_dim"], bg=cell_bg,
+                     font=self._font_small).place(relx=0.5, rely=0.78, anchor="center")
+
+            # Click support (mouse mode)
+            kind, val = self._phrase_zone_map.get(zone, (None, None))
+            if kind == "phrase":
+                cell.bind("<Button-1>", lambda e, p=val: self._select_phrase(p))
+                for w in cell.winfo_children():
+                    w.bind("<Button-1>", lambda e, p=val: self._select_phrase(p))
+            elif kind == "back":
+                cell.bind("<Button-1>", lambda e: self._build_category_panel())
+                for w in cell.winfo_children():
+                    w.bind("<Button-1>", lambda e: self._build_category_panel())
+
+        tk.Button(overlay, text="✖ Close Phrase Bank",
+                  fg="#e94560", bg="#0a1628",
+                  relief="flat", font=self._font_small,
+                  command=self._close_phrase_bank).pack(side="bottom", pady=6)
+
+    def _phrase_bank_fire(self, zone: int) -> None:
+        """Called by fire_command when phrase panel is open."""
+        kind_val = self._phrase_zone_map.get(zone)
+        if kind_val is None:
+            return
+        kind, val = kind_val
+        if kind == "phrase":
+            self.root.after(0, lambda: self._select_phrase(val))
+        elif kind == "category":
+            self.root.after(0, lambda: self._open_category(val))
+        elif kind == "back":
+            self.root.after(0, self._build_category_panel)
+
+    def _select_phrase(self, phrase: str) -> None:
+        """Insert a full phrase into the typed text and close the bank."""
+        if self._typed_text and not self._typed_text.endswith(" "):
+            self._typed_text += " "
+        self._typed_text += phrase + " "
+        self._flush_display()
+        self._speak(phrase)
+        self._set_status(f"Phrase: {phrase}")
+        if self.on_text_change:
+            self.on_text_change(self._typed_text)
+        self._close_phrase_bank()
 
     # ── TTS ───────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,48 @@
+{
+  "categories": {
+    "Needs": [
+      "I need help",
+      "I am in pain",
+      "I am hungry",
+      "I am thirsty",
+      "I need the bathroom",
+      "I am tired",
+      "I am cold",
+      "I am hot",
+      "Call a doctor"
+    ],
+    "Greetings": [
+      "Hello",
+      "Good morning",
+      "Good night",
+      "How are you?",
+      "Thank you",
+      "Please",
+      "Yes",
+      "No",
+      "Goodbye"
+    ],
+    "Feelings": [
+      "I am happy",
+      "I am sad",
+      "I am worried",
+      "I am comfortable",
+      "I am uncomfortable",
+      "I love you",
+      "I am okay",
+      "I am not okay",
+      "I am frustrated"
+    ],
+    "Daily": [
+      "I want to watch TV",
+      "Turn off the lights",
+      "Open the window",
+      "I want to go outside",
+      "Can you read to me?",
+      "I want music",
+      "I want to sleep",
+      "I want to sit up",
+      "I want to lie down"
+    ]
+  }
+}
