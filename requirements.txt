@@ -4,7 +4,7 @@ torch>=2.1.0
 torchvision>=0.16.0
 
 # Computer vision
-opencv-python>=4.8.0
+opencv-python>=4.8.0,<5.0.0  # OpenCV 5 removed CascadeClassifier; must stay on 4.x
 Pillow>=10.0.0
 
 # NLP / embeddings
