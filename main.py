@@ -169,6 +169,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
             self.ret, self.frame = self.cap.read()
             self.running  = True
             self._spf     = 1.0 / 30   # seconds per frame target
+            self.new_frame_event = threading.Event()
             if self.cap.isOpened():
                 self.thread = threading.Thread(target=self.update, daemon=True)
                 self.thread.start()
@@ -180,6 +181,7 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                 if ret:
                     self.frame = frame
                     self.ret   = ret
+                    self.new_frame_event.set()
                 else:
                     # Back off on failure — prevents hammering a stalled driver
                     time.sleep(0.05)
@@ -190,7 +192,10 @@ def run_webcam_mode(args, algorithm: str = "async") -> None:
                     time.sleep(gap)
 
         def read(self):
-            return self.ret, self.frame
+            if self.new_frame_event.wait(timeout=0.1):
+                self.new_frame_event.clear()
+                return self.ret, self.frame
+            return False, None
 
         def release(self):
             self.running = False
