@@ -1,4 +1,4 @@
-﻿"""
+"""
 train_gaze.py — CNN gaze direction classifier (PyTorch)
 
 Architecture mirrors Meena & Salvi 2025 exactly (282,701 parameters):
@@ -20,14 +20,14 @@ import time
 from pathlib import Path
 
 # pyrefly: ignore [missing-import]
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets, transforms
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+# Note: matplotlib and sklearn are imported lazily inside _plot_* functions
+#       so that gaze_predictor.py can import GazeCNN without those deps.
 
 # ── Model Definition ───────────────────────────────────────────────────────────
 
@@ -237,6 +237,7 @@ def train(
 
 
 def _plot_history(history: dict, output_dir: str) -> None:
+    import matplotlib.pyplot as plt  # training-only dep
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
     ax1.plot(history["train_loss"], label="Train")
@@ -256,6 +257,8 @@ def _plot_history(history: dict, output_dir: str) -> None:
 def _plot_confusion_matrix(
     model: nn.Module, val_loader: DataLoader, device: torch.device, output_dir: str
 ) -> None:
+    import matplotlib.pyplot as plt  # training-only dep
+    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay  # training-only dep
     from data_loader import DIR_NAMES
 
     model.eval()
