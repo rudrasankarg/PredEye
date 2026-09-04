@@ -52,14 +52,16 @@ except ImportError:
 # ── Keyboard layout ────────────────────────────────────────────────────────────
 
 LETTER_GROUPS: dict[int, str] = {
-    1: "ABCD",
-    2: "EFGH",
-    3: "IJKL",
-    4: "MNO",
-    5: "SPACE",     # Centre = SPACE at top level; GO BACK at level 2
-    6: "PQR",
-    7: "STUV",
-    8: "WXYZ",
+    # 6 letter groups of 5 letters (zones 1-6)
+    1: "ABCDE",
+    2: "FGHIJ",
+    3: "KLMNO",
+    4: "PQRST",
+    5: "UVWXY",
+    6: "Z",           # Z + any extra
+    # Action zones
+    7: "PHRASES",    # gaze-accessible phrase bank (in the grid)
+    8: "SPACE",
     9: "DELETE",
 }
 
@@ -363,21 +365,60 @@ class KeyboardGUI:
         self._level = 2
         self._selected_group = group_dir
         letters = list(LETTER_GROUPS[group_dir])
-        positions = [d for d in range(1, 10) if d != 5]
+        # Zones 1,2,3,4 = letters 1-4 | Zone 5 = BACK | Zone 6 = letter 5
+        # Zones 7,8,9 = LSTM word predictions (gaze-selectable shortcuts)
+        letter_zones = [1, 2, 3, 4, 6]   # 5 letter slots, skipping zone 5
         self._current_cells = {}
-        for i, d in enumerate(positions):
+        for i, d in enumerate(letter_zones):
             self._current_cells[d] = letters[i] if i < len(letters) else ""
-        self._current_cells[5] = "<< BACK"   # GO BACK only at level 2
+        self._current_cells[5] = "<< BACK"
+        # Fill prediction zones
+        for i, zone in enumerate([7, 8, 9]):
+            self._current_cells[zone] = self._pred_labels[i] if i < len(self._pred_labels) else ""
         self._refresh_cells()
 
     def _refresh_cells(self) -> None:
+        PRED_ZONES = {7, 8, 9}
         for direction in range(1, 10):
             label = self._current_cells.get(direction, "")
             self._cell_labels[direction].config(text=label)
-            if self._level == 1 and direction not in (5, 9):
-                self._cell_sublabels[direction].config(text=f"({len(label)} letters)")
-            else:
-                self._cell_sublabels[direction].config(text="")
+
+            if self._level == 1:
+                # Restore idle colours for all cells
+                self._cell_frames[direction].config(bg=PALETTE["cell_idle"])
+                self._cell_labels[direction].config(
+                    bg=PALETTE["cell_idle"], fg=PALETTE["text_primary"])
+                self._cell_sublabels[direction].config(bg=PALETTE["cell_idle"])
+                if direction == 9:           # DELETE
+                    self._cell_sublabels[direction].config(text="")
+                elif direction == 8:         # SPACE
+                    self._cell_sublabels[direction].config(text="")
+                elif direction == 7:         # PHRASES
+                    self._cell_sublabels[direction].config(text="browse phrases")
+                    self._cell_labels[direction].config(fg="#f0e68c")
+                elif direction == 5:         # UVWXY group
+                    self._cell_sublabels[direction].config(text=f"({len(label)} letters)")
+                else:                        # letter groups 1-4, 6
+                    self._cell_sublabels[direction].config(text=f"({len(label)} letters)")
+            else:  # level 2
+                if direction in PRED_ZONES:
+                    # Style prediction cells distinctly (purple-tinted)
+                    has_pred = bool(label and self.prediction_enabled)
+                    cell_bg = PALETTE["pred_bg"] if has_pred else "#0a0a18"
+                    self._cell_frames[direction].config(bg=cell_bg)
+                    self._cell_labels[direction].config(
+                        bg=cell_bg,
+                        fg=PALETTE["accent"] if has_pred else PALETTE["text_dim"])
+                    self._cell_sublabels[direction].config(
+                        bg=cell_bg,
+                        text="\U0001f441 word shortcut" if has_pred else "")
+                else:
+                    self._cell_frames[direction].config(bg=PALETTE["cell_idle"])
+                    self._cell_labels[direction].config(
+                        bg=PALETTE["cell_idle"], fg=PALETTE["text_primary"])
+                    self._cell_sublabels[direction].config(
+                        bg=PALETTE["cell_idle"], text="")
+
         # Reset all dwell bars when level changes
         self.root.after(0, lambda: [self.set_dwell_progress(d, 0.0) for d in range(1, 10)])
 
@@ -497,26 +538,46 @@ class KeyboardGUI:
                 self._set_status("Deleted last character")
                 if self.on_text_change:
                     self.on_text_change(self._typed_text)
-            elif direction == 5:           # SPACE
+            elif direction == 8:           # SPACE (moved from zone 5)
                 self._typed_text += " "
                 self._flush_display()
                 self._speak("Space")
                 self._set_status("Space added")
                 if self.on_text_change:
                     self.on_text_change(self._typed_text)
-            else:                          # letter group
+            elif direction == 7:           # PHRASES — gaze-accessible from grid
+                self._open_phrase_bank()
+                self._speak("Phrases")
+                self._set_status("Phrase bank opened — gaze a category")
+            else:                          # letter groups 1-6
                 self._set_level2(direction)
                 self._speak(f"Group {label}")
-                self._set_status(f"Selected group: {label}  — now pick a letter")
+                self._set_status(f"Group: {label} — pick a letter or word shortcut")
         else:  # level 2
             if direction == 5 or label in ("GO BACK", "<< BACK", "BACK"):
                 self._set_level1()
                 self._speak("Back")
                 self._set_status("Back to main menu")
+            elif direction in (7, 8, 9) and self.prediction_enabled:
+                # Prediction word shortcut — gaze-selectable from within the grid
+                pred_idx = direction - 7
+                word = self._pred_labels[pred_idx] if pred_idx < len(self._pred_labels) else ""
+                if word:
+                    parts = self._typed_text.split()
+                    if self._typed_text and not self._typed_text.endswith(" "):
+                        parts = parts[:-1]
+                    parts.append(word)
+                    self._typed_text = " ".join(parts) + " "
+                    self._flush_display()
+                    self._speak(word)
+                    self._set_status(f"Word selected: {word}")
+                    if self.on_text_change:
+                        self.on_text_change(self._typed_text)
+                    self._set_level1()
             elif label:   # valid letter
                 self._type_character(label)
                 self._set_level1()
-            # else: empty cell — do nothing, don't change level
+            # else: empty cell — do nothing
 
     def _type_character(self, char: str) -> None:
         self._typed_text += char
@@ -537,6 +598,29 @@ class KeyboardGUI:
     def update_predictions(self, completions: list) -> None:
         self._pred_labels = (completions + ["", "", ""])[:3]
         self.root.after(0, self._refresh_predictions)
+        # Live-update zones 7,8,9 in the grid if the user is at level 2
+        if self._level == 2:
+            self.root.after(0, self._refresh_pred_in_grid)
+
+    def _refresh_pred_in_grid(self) -> None:
+        """Update zones 7,8,9 with new predictions while user is choosing a letter."""
+        if self._level != 2:
+            return
+        for i, zone in enumerate([7, 8, 9]):
+            word = self._pred_labels[i] if i < len(self._pred_labels) else ""
+            self._current_cells[zone] = word
+            has_pred = bool(word and self.prediction_enabled)
+            cell_bg = PALETTE["pred_bg"] if has_pred else "#0a0a18"
+            lbl = self._cell_labels.get(zone)
+            sub = self._cell_sublabels.get(zone)
+            frm = self._cell_frames.get(zone)
+            if lbl:
+                lbl.config(text=word, bg=cell_bg,
+                           fg=PALETTE["accent"] if has_pred else PALETTE["text_dim"])
+            if sub:
+                sub.config(text="\U0001f441 word shortcut" if has_pred else "", bg=cell_bg)
+            if frm:
+                frm.config(bg=cell_bg)
 
     def _refresh_predictions(self) -> None:
         for i, btn in enumerate(self._pred_buttons):
