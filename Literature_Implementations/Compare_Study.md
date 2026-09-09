@@ -174,9 +174,6 @@ We utilized two primary evaluation metrics across all three implementations:
 
 ## 4.1 Accuracy Score
 Accuracy is the most intuitive performance measure. It is simply a ratio of correctly predicted observations to the total observations.
-**Formula:**
-$$ \text{Accuracy} = \frac{TP + TN}{TP + FP + FN + TN} $$
-Where TP = True Positives, TN = True Negatives, FP = False Positives, FN = False Negatives.
 
 ## 4.2 Weighted F1 Score
 While accuracy is good, it can be highly misleading if the dataset is imbalanced (e.g., if there are 10,000 "Open" eye images but only 500 "Closed" eye images). Therefore, we implemented the **F1 Score**, which is the harmonic mean of Precision and Recall. We used the `average='weighted'` parameter in `scikit-learn` to calculate the metrics for each label, and find their average weighted by support (the number of true instances for each label).
