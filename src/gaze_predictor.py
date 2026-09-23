@@ -1,4 +1,4 @@
-﻿"""
+"""
 gaze_predictor.py — Load trained CNN and predict gaze direction
 
 Wraps the GazeCNN PyTorch model for real-time inference.
@@ -55,7 +55,7 @@ class GazePredictor:
 
         ckpt_path = Path(model_path)
         if ckpt_path.exists():
-            ckpt = torch.load(ckpt_path, map_location=self.device)
+            ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(ckpt["model_state_dict"])
             print(f"[GazePredictor] Loaded checkpoint: {ckpt_path} "
                   f"(epoch={ckpt.get('epoch','?')}, "
