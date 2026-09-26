@@ -7,7 +7,6 @@
 ### 1. Set up the environment
 
 ```powershell
-# From the project root — uses Python 3.12
 py -3.12 -m venv venv
 .\venv\Scripts\Activate.ps1
 
