@@ -4,7 +4,7 @@
 
 ## Quick Start
 
-### 1. Set up the environment
+### 1. Setting up the environment
 
 ```powershell
 py -3.12 -m venv venv
